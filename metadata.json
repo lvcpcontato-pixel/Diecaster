@@ -1,0 +1,7 @@
+{
+  "name": "Diecaster",
+  "description": "A modern application to catalog die-cast miniature collections with dashboards and spreadsheet integration features.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
