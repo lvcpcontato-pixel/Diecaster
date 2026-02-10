@@ -1,23 +1,21 @@
 
 import { Car } from '../types';
 
-/**
- * CONFIGURAÇÃO MESTRA DO APP (MEMÓRIA NATIVA)
- * Aqui residem as chaves que permitem o funcionamento sem configuração manual.
- */
-const APP_CONFIG = {
-  CLIENT_ID: '618943723631-48c9i2groird8g221ovrgoij5j2d173o.apps.googleusercontent.com',
+const DEFAULT_CONFIG = {
   SYNC_URL: 'https://script.google.com/macros/s/AKfycbzhTn9t-q6UfUncD65H_2txU8HRAECP8_vqAA1yr7zFZ1YAZEx8U0oH7RXCmR2oFk5NxQ/exec'
 };
 
 const STORAGE_KEY = 'diecast_collection_db_v17';
+const CONFIG_OVERRIDE_KEY = 'diecast_config_overrides';
 
-export const getSyncUrl = () => APP_CONFIG.SYNC_URL;
-export const getGoogleClientId = () => APP_CONFIG.CLIENT_ID;
+export const getSyncUrl = () => {
+  const overrides = JSON.parse(localStorage.getItem(CONFIG_OVERRIDE_KEY) || '{}');
+  return overrides.syncUrl || DEFAULT_CONFIG.SYNC_URL;
+};
 
-// Funções de compatibilidade (mantidas para não quebrar referências, mas agora são estáticas)
-export const setSyncUrl = (url: string) => console.warn("A URL agora é fixa no código.");
-export const setGoogleClientId = (id: string) => console.warn("O Client ID agora é fixo no código.");
+export const saveConfigOverrides = (syncUrl: string) => {
+  localStorage.setItem(CONFIG_OVERRIDE_KEY, JSON.stringify({ syncUrl }));
+};
 
 export const getCars = async (): Promise<Car[]> => {
   const syncUrl = getSyncUrl();

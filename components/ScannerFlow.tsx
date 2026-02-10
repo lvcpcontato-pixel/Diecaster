@@ -2,7 +2,7 @@
 import React, { useState } from 'react';
 import { Car } from '../types';
 import { analyzeCarImage } from '../services/aiService';
-import { Camera, Search, AlertCircle, CheckCircle, Loader2, Image as ImageIcon, ScanLine, CloudUpload, X, Sparkles } from 'lucide-react';
+import { Camera, CheckCircle, Loader2, ScanLine, CloudUpload, X, Sparkles, AlertTriangle, Layers, AlertCircle } from 'lucide-react';
 
 interface ScannerFlowProps {
   cars: Car[];
@@ -11,14 +11,20 @@ interface ScannerFlowProps {
   onCancel: () => void;
 }
 
+interface MatchResult extends Car {
+  matchType: 'exact' | 'strong' | 'potential';
+  matchReason: string;
+}
+
 export const ScannerFlow: React.FC<ScannerFlowProps> = ({ cars, onCatalogItem, onDirectSave, onCancel }) => {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [analyzedData, setAnalyzedData] = useState<Partial<Car> | null>(null);
   const [currentBase64, setCurrentBase64] = useState<string | null>(null);
-  const [matches, setMatches] = useState<Car[]>([]);
-  const [manualSearch, setManualSearch] = useState('');
+  const [matches, setMatches] = useState<MatchResult[]>([]);
   const [step, setStep] = useState<'scan' | 'result'>('scan');
+
+  const normalize = (val: string | undefined) => (val || '').toLowerCase().trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
   const resizeImage = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -46,15 +52,75 @@ export const ScannerFlow: React.FC<ScannerFlowProps> = ({ cars, onCatalogItem, o
     });
   };
 
-  const performCheck = (criteria: Partial<Car>) => {
-    const searchTerm = String(criteria.modelo || manualSearch || '').toLowerCase().trim();
-    if (!searchTerm) return;
-    const found = cars.filter(car => {
-      const carModelo = String(car.modelo || '').toLowerCase();
-      const carMarca = String(car.marca || '').toLowerCase();
-      return carModelo.includes(searchTerm) && (criteria.marca ? carMarca.includes(String(criteria.marca).toLowerCase()) : true);
+  const performCheck = (aiData: Partial<Car>) => {
+    const aiMarca = normalize(aiData.marca);
+    const aiModeloRaw = normalize(aiData.modelo);
+    
+    // Remove brand name from model string to avoid "Toyota Corolla" matching "Toyota Supra" just because of "Toyota"
+    const cleanModel = (model: string, brand: string) => {
+       return model.replace(brand, '').trim();
+    };
+
+    const aiModelo = cleanModel(aiModeloRaw, aiMarca);
+
+    if (!aiModelo) return;
+
+    // Helper: Split model into words (tokens)
+    const getTokens = (str: string) => str.split(/\s+/).filter(w => w.length > 1);
+    const aiTokens = getTokens(aiModelo);
+
+    const foundMatches: MatchResult[] = [];
+
+    cars.forEach(car => {
+      const carMarca = normalize(car.marca);
+      
+      // 1. Strict Brand Filter: Only compare if brands match (or if one is missing)
+      if (aiMarca && carMarca && aiMarca !== carMarca) {
+         return; 
+      }
+
+      const carModeloRaw = normalize(car.modelo);
+      const carModelo = cleanModel(carModeloRaw, carMarca); // Remove brand from existing car model too
+
+      // 2. Check for Exact Match
+      if (carModelo === aiModelo) {
+         foundMatches.push({ ...car, matchType: 'exact', matchReason: 'Modelo Idêntico' });
+         return;
+      }
+
+      // 3. Token-based matching (Words Intersection)
+      const carTokens = getTokens(carModelo);
+      
+      // Find words present in both
+      const commonTokens = aiTokens.filter(token => carTokens.includes(token));
+      
+      // Logic: 
+      // - Must have overlap.
+      // - If numeric model (e.g. "911", "350z"), 1 token match is enough.
+      // - If word model (e.g. "Land Cruiser"), require significant overlap or subset.
+      
+      const isSubset = commonTokens.length === Math.min(aiTokens.length, carTokens.length);
+      const hasMultiTokenMatch = commonTokens.length >= 2;
+      const hasNumericMatch = commonTokens.length === 1 && /\d/.test(commonTokens[0]); // Matches "911", "GT3", "F-150"
+
+      if ((isSubset && commonTokens.length > 0) || hasMultiTokenMatch || hasNumericMatch) {
+          const mfgMatch = normalize(car.fabricante) === normalize(aiData.fabricante);
+          const colorMatch = normalize(car.cor) === normalize(aiData.cor);
+
+          if (mfgMatch && colorMatch) {
+             foundMatches.push({ ...car, matchType: 'strong', matchReason: 'Variação muito próxima' });
+          } else {
+             foundMatches.push({ ...car, matchType: 'potential', matchReason: 'Modelo Similar' });
+          }
+      }
     });
-    setMatches(found);
+
+    foundMatches.sort((a, b) => {
+      const order = { exact: 0, strong: 1, potential: 2 };
+      return order[a.matchType] - order[b.matchType];
+    });
+
+    setMatches(foundMatches);
     setStep('result');
   };
 
@@ -109,7 +175,7 @@ export const ScannerFlow: React.FC<ScannerFlowProps> = ({ cars, onCatalogItem, o
            <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Scanner Inteligente</h2>
            <p className="text-slate-500 text-lg">Tire uma foto e a IA identificará os detalhes.</p>
            <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 uppercase tracking-widest bg-emerald-50 px-3 py-1 rounded-full border border-emerald-100">
-             <Sparkles size={10}/> Tecnologia Gratuita Gemini Flash
+             <Sparkles size={10}/> Tecnologia Gemini
            </div>
         </div>
         
@@ -123,7 +189,7 @@ export const ScannerFlow: React.FC<ScannerFlowProps> = ({ cars, onCatalogItem, o
                  </div>
                  <div className="text-center">
                     <span className="block text-emerald-600 font-bold text-xl animate-pulse">Analisando Imagem...</span>
-                    <span className="text-slate-400 text-sm italic">Isso é grátis e leva poucos segundos</span>
+                    <span className="text-slate-400 text-sm italic">Identificando miniatura</span>
                  </div>
                </div>
              ) : (
@@ -143,7 +209,7 @@ export const ScannerFlow: React.FC<ScannerFlowProps> = ({ cars, onCatalogItem, o
   }
 
   return (
-    <div className="max-w-4xl mx-auto animate-fade-in pb-20">
+    <div className="max-w-6xl mx-auto animate-fade-in pb-20 px-4">
       <div className="flex justify-between items-center mb-8">
         <button onClick={() => setStep('scan')} className="text-slate-400 hover:text-slate-900 flex items-center gap-2 text-sm font-bold uppercase tracking-widest transition-colors">← Refazer Scan</button>
         <button onClick={onCancel} className="text-slate-300 hover:text-rose-500 transition-colors"><X size={24} /></button>
@@ -154,7 +220,6 @@ export const ScannerFlow: React.FC<ScannerFlowProps> = ({ cars, onCatalogItem, o
            <div className="absolute inset-0 bg-white/90 z-50 flex flex-col items-center justify-center animate-fade-in">
               <Loader2 className="w-12 h-12 text-emerald-500 animate-spin mb-4" />
               <p className="font-display text-emerald-800 uppercase italic">Salvando na Nuvem...</p>
-              <p className="text-slate-400 text-xs italic">Armazenamento grátis via Google Drive/Sheets</p>
            </div>
          )}
          <div className="relative">
@@ -184,61 +249,122 @@ export const ScannerFlow: React.FC<ScannerFlowProps> = ({ cars, onCatalogItem, o
               </div>
            ) : (
               <div className="bg-amber-50 border border-amber-100 px-8 py-4 rounded-2xl text-center">
-                 <div className="text-amber-800 font-display text-lg">REPETIDO?</div>
-                 <div className="text-amber-600 text-[10px] font-bold uppercase tracking-widest">{matches.length} similares na base</div>
+                 <div className="text-amber-800 font-display text-lg flex items-center gap-2 justify-center">
+                    <AlertTriangle size={18} /> POSSÍVEL REPETIDO
+                 </div>
+                 <div className="text-amber-600 text-[10px] font-bold uppercase tracking-widest">{matches.length} similares encontrados</div>
               </div>
            )}
          </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
-         <div className="space-y-4">
-            <h3 className="text-slate-400 font-bold uppercase text-[10px] tracking-widest ml-4">Dados da IA</h3>
-            <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm grid grid-cols-2 gap-4">
-               <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase">Marca</label>
-                  <p className="text-slate-800 font-bold">{analyzedData?.marca}</p>
-               </div>
-               <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase">Modelo</label>
-                  <p className="text-slate-800 font-bold">{analyzedData?.modelo}</p>
-               </div>
-               <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase">Fabricante</label>
-                  <p className="text-slate-800 font-bold">{analyzedData?.fabricante}</p>
-               </div>
-               <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase">Ano/Pack</label>
-                  <p className="text-slate-800 font-bold">{analyzedData?.ano || '-'} {analyzedData?.pack || '-'}</p>
-               </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+         <div className="lg:col-span-2 space-y-8">
+            <div className="space-y-4">
+              <h3 className="text-slate-400 font-bold uppercase text-[10px] tracking-widest ml-4 flex items-center gap-2">
+                 <Sparkles size={12}/> Dados Extraídos pela IA
+              </h3>
+              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm grid grid-cols-2 gap-6">
+                <div className="space-y-4">
+                   <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase">Marca (Carro)</label>
+                      <p className="text-slate-800 font-bold text-lg">{analyzedData?.marca || '-'}</p>
+                   </div>
+                   <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase">Fabricante (Mini)</label>
+                      <p className="text-slate-800 font-bold text-lg">{analyzedData?.fabricante || '-'}</p>
+                   </div>
+                </div>
+                <div className="space-y-4">
+                   <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase">Modelo</label>
+                      <p className="text-slate-800 font-bold text-lg">{analyzedData?.modelo || '-'}</p>
+                   </div>
+                   <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase">Cor</label>
+                      <p className="text-slate-800 font-bold text-lg">{analyzedData?.cor || '-'}</p>
+                   </div>
+                </div>
+              </div>
             </div>
+
+            {matches.length > 0 && (
+              <div className="space-y-4 animate-slide-up">
+                <h3 className="text-amber-600 font-bold uppercase text-[10px] tracking-widest ml-4 flex items-center gap-2">
+                   <AlertCircle size={12}/> Alertas de Cruzamento ({matches.length})
+                </h3>
+                <div className="bg-amber-50/30 border border-amber-100 rounded-3xl overflow-hidden shadow-inner">
+                   {matches.map((car, idx) => (
+                      <div key={car.id} className={`p-5 flex items-center gap-5 ${idx !== matches.length - 1 ? 'border-b border-amber-100' : ''} hover:bg-amber-50 transition-colors`}>
+                         <div className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 border shadow-sm ${car.matchType === 'exact' ? 'bg-rose-100 text-rose-600 border-rose-200' : 'bg-amber-100 text-amber-600 border-amber-200'}`}>
+                            {car.matchType === 'exact' ? <AlertCircle size={24} /> : <Layers size={24} />}
+                         </div>
+                         <div className="flex-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2 mb-1">
+                               <p className="text-sm font-bold text-slate-900 truncate">{car.marca} {car.modelo}</p>
+                               <span className={`text-[8px] font-bold px-2 py-0.5 rounded-full uppercase tracking-tighter ${car.matchType === 'exact' ? 'bg-rose-500 text-white' : 'bg-amber-500 text-white'}`}>
+                                  {car.matchReason}
+                               </span>
+                            </div>
+                            <p className="text-[10px] text-slate-500 truncate uppercase tracking-tight flex items-center gap-2">
+                               <span className="font-bold text-slate-700">{car.fabricante}</span> • {car.cor} • {car.ano || 'S/ Ano'}
+                            </p>
+                         </div>
+                      </div>
+                   ))}
+                </div>
+              </div>
+            )}
             
             <button 
               onClick={() => onCatalogItem(analyzedData || {})}
-              className="w-full py-3 text-slate-400 hover:text-emerald-600 text-xs font-bold uppercase tracking-widest border border-slate-200 border-dashed rounded-xl transition-all"
+              className="w-full py-4 text-slate-500 hover:text-emerald-600 text-xs font-bold uppercase tracking-widest border-2 border-slate-200 border-dashed rounded-2xl transition-all hover:border-emerald-500/50 hover:bg-emerald-50/50"
             >
-              Corrigir Manualmente
+              Corrigir Manualmente antes de Salvar
             </button>
          </div>
          
-         <div className="bg-slate-900 p-8 rounded-[32px] shadow-2xl relative overflow-hidden">
-            <div className="absolute top-0 right-0 p-8 text-white/5 rotate-12">
-               <CloudUpload size={120} />
+         <div className="bg-slate-900 p-8 rounded-[40px] shadow-2xl relative overflow-hidden flex flex-col h-full lg:sticky lg:top-8">
+            <div className="absolute top-0 right-0 p-8 text-white/5 rotate-12 pointer-events-none">
+               <CloudUpload size={160} />
             </div>
-            <h3 className="text-2xl font-display text-white italic mb-4 relative z-10">Tudo Certo?</h3>
-            <p className="text-slate-400 text-sm mb-8 leading-relaxed relative z-10">Confirme para salvar na sua planilha do Google Sheets gratuitamente.</p>
             
-            <button 
-              onClick={handleDirectSaveClick}
-              disabled={isSaving}
-              className="w-full py-5 bg-emerald-500 hover:bg-white hover:text-slate-900 text-slate-950 rounded-2xl font-display text-xl uppercase tracking-wider flex items-center justify-center gap-3 transition-all shadow-[0_10px_30px_rgba(16,185,129,0.3)] active:scale-95 group relative z-10 disabled:opacity-50"
-            >
-               Confirmar & Salvar <CloudUpload size={24} className="group-hover:translate-y-[-2px] transition-transform" />
-            </button>
+            <div className="relative z-10 flex-1">
+              <h3 className="text-3xl font-display text-white italic mb-4">Finalizar?</h3>
+              <p className="text-slate-400 text-sm mb-8 leading-relaxed">
+                Este item será adicionado à sua planilha e ficará disponível em todos os dispositivos.
+              </p>
+
+              {matches.some(m => m.matchType === 'exact') ? (
+                <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl mb-8">
+                  <p className="text-rose-400 text-xs font-bold flex items-center gap-2">
+                    <AlertCircle size={14} /> ITEM IDÊNTICO DETECTADO
+                  </p>
+                  <p className="text-rose-400/70 text-[10px] mt-1">
+                    Você já possui exatamente este modelo. Catalogar duplicatas pode poluir seu inventário.
+                  </p>
+                </div>
+              ) : matches.length > 0 ? (
+                <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl mb-8">
+                  <p className="text-amber-400 text-xs font-bold flex items-center gap-2">
+                    <AlertTriangle size={14} /> POSSÍVEL REPETIDO
+                  </p>
+                  <p className="text-amber-400/70 text-[10px] mt-1">
+                    Modelos similares encontrados. Verifique a lista ao lado.
+                  </p>
+                </div>
+              ) : null}
+            </div>
             
-            <p className="text-center text-slate-500 text-[10px] mt-6 font-bold uppercase tracking-widest flex items-center justify-center gap-1">
-              <Sparkles size={10}/> Processamento Gratuito via Gemini Flash
-            </p>
+            <div className="relative z-10 space-y-4">
+              <button 
+                onClick={handleDirectSaveClick}
+                disabled={isSaving}
+                className="w-full py-6 bg-emerald-500 hover:bg-white hover:text-slate-900 text-slate-950 rounded-2xl font-display text-2xl uppercase tracking-wider flex items-center justify-center gap-3 transition-all shadow-[0_10px_40px_rgba(16,185,129,0.3)] active:scale-95 group disabled:opacity-50"
+              >
+                {isSaving ? <Loader2 className="animate-spin" size={28} /> : <>Salvar na Frota <CloudUpload size={28} /></>}
+              </button>
+            </div>
          </div>
       </div>
     </div>
